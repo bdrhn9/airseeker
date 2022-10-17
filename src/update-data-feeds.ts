@@ -3,6 +3,7 @@ import { go } from '@api3/promise-utils';
 import { getGasPrice } from '@api3/airnode-utilities';
 import { ethers } from 'ethers';
 import { isEmpty, isNil } from 'lodash';
+import anyPromise from 'promise.any';
 import { calculateMedian } from './calculations';
 import {
   checkBeaconSetSignedDataFreshness,
@@ -13,19 +14,31 @@ import {
 import { INT224_MAX, INT224_MIN, NO_DATA_FEEDS_EXIT_CODE } from './constants';
 import { logger } from './logging';
 import { readDataFeedWithId } from './read-data-feed-with-id';
-import { getState, Provider } from './state';
+import { getState, Provider, updateState } from './state';
 import { getTransactionCount } from './transaction-count';
 import { prepareGoOptions, shortenAddress, sleep } from './utils';
-import { BeaconSetUpdate, BeaconUpdate, SignedData } from './validation';
+import { BeaconSetUpdate, BeaconUpdate, SignedData, DataFeedUpdates, Config } from './validation';
 
 type ProviderSponsorDataFeeds = {
   provider: Provider;
+  chainId: string;
   sponsorAddress: string;
   updateInterval: number;
   beacons: BeaconUpdate[];
   beaconSets: BeaconSetUpdate[];
 };
 
+type ChainSponsorGroup = {
+  chainId: string;
+  sponsorAddress: string;
+  providers: Provider[];
+};
+
+type ChainSponsorBalance = {
+  chainId: string;
+  sponsorAddress: string;
+  isEmpty: boolean;
+};
 type BeaconSetBeaconValue = {
   beaconId: string;
   airnode: string;
@@ -62,7 +75,7 @@ export const groupDataFeedsByProviderSponsor = () => {
 
       const providerSponsorGroups = Object.entries(dataFeedUpdatesPerSponsor).reduce(
         (acc: ProviderSponsorDataFeeds[], [sponsorAddress, dataFeedUpdate]) => {
-          return [...acc, ...providers.map((provider) => ({ provider, sponsorAddress, ...dataFeedUpdate }))];
+          return [...acc, ...providers.map((provider) => ({ provider, chainId, sponsorAddress, ...dataFeedUpdate }))];
         },
         []
       );
@@ -70,6 +83,77 @@ export const groupDataFeedsByProviderSponsor = () => {
       return [...acc, ...providerSponsorGroups];
     },
     []
+  );
+};
+
+export const filterEmptyWallets = async () => {
+  const { config, providers: stateProviders, sponsorWalletsPrivateKey } = getState();
+
+  const chainSponsorGroups = Object.entries(config.triggers.dataFeedUpdates).reduce(
+    (acc: ChainSponsorGroup[], [chainId, dataFeedUpdatesPerSponsor]) => {
+      const providers = stateProviders[chainId];
+      const providersSponsorGroups = Object.keys(dataFeedUpdatesPerSponsor).map((sponsorAddress) => {
+        return {
+          chainId,
+          providers,
+          sponsorAddress,
+        };
+      });
+      return [...acc, ...providersSponsorGroups];
+    },
+    []
+  );
+
+  const chainSponsorBalanceGroups = chainSponsorGroups.map(
+    async ({ chainId, providers, sponsorAddress }): Promise<ChainSponsorBalance> => {
+      const sponsorWallet = new ethers.Wallet(sponsorWalletsPrivateKey[sponsorAddress]);
+      const balanceProviders = providers.map(async ({ rpcProvider }) => {
+        const goResult = await go(() => rpcProvider.getBalance(sponsorWallet.address),{retries: 2});
+
+        if (!goResult.success) {
+          const message = `Failed to get balance for ${sponsorWallet.address}`;
+          logger.debug(message);
+          logger.error(goResult.error.message);
+          throw new Error(message);
+        }
+        const walletBalance = goResult.data;
+        return walletBalance.isZero();
+      });
+
+      const goAnyResult = await go(() => anyPromise(balanceProviders));
+      if (!goAnyResult.success) {
+        const message = `All providers failed to get balance for ${sponsorWallet.address}, chainId: ${chainId}`;
+        logger.error(message);
+        logger.error(goAnyResult.error.message);
+        throw new Error(message);
+      }
+      const isEmpty = goAnyResult.data;
+
+      return { sponsorAddress, chainId, isEmpty };
+    }
+  );
+  const responseChainSponsorBalanceGroups = await Promise.allSettled(chainSponsorBalanceGroups);
+
+  // Get fulfilled results
+  const fulfilledResponses = responseChainSponsorBalanceGroups
+    .filter(({ status }) => status === 'fulfilled')
+    .map((p) => (p as PromiseFulfilledResult<ChainSponsorBalance>).value);
+
+  // Update dataFeedUpdates with non-empty wallets
+  const validDataFeedUpdates = fulfilledResponses
+    .filter(({ isEmpty }) => isEmpty === false)
+    .reduce((acc: DataFeedUpdates, { chainId, sponsorAddress }) => {
+      return {
+         ...acc ,[chainId]: { ...acc[chainId], [sponsorAddress]: config.triggers.dataFeedUpdates[chainId][sponsorAddress] },
+      };
+    }, {});
+
+  const newConfig: Config = { ...config, triggers: { ['dataFeedUpdates']: validDataFeedUpdates } };
+  updateState((state) => ({ ...state, config: newConfig }));
+  
+  const validDataFeeds = fulfilledResponses.filter(({ isEmpty }) => isEmpty === false);
+  logger.info(
+    `${fulfilledResponses.length}/${responseChainSponsorBalanceGroups.length} promises were resolved. Continuing w/ ${validDataFeeds.length} datafeeds`
   );
 };
 

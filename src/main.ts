@@ -2,7 +2,7 @@ import * as path from 'path';
 import { logger } from './logging';
 import { loadConfig } from './config';
 import { initiateFetchingBeaconData } from './fetch-beacon-data';
-import { initiateDataFeedUpdates } from './update-data-feeds';
+import { filterEmptyWallets, initiateDataFeedUpdates } from './update-data-feeds';
 import { initializeProviders } from './providers';
 import { initializeWallets } from './wallets';
 import { initializeState, updateState } from './state';
@@ -24,6 +24,7 @@ export async function main() {
 
   initializeProviders();
   initializeWallets();
+  await filterEmptyWallets();
   initiateFetchingBeaconData();
   initiateDataFeedUpdates();
 }
