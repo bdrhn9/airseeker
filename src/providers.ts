@@ -2,11 +2,14 @@ import { ethers } from 'ethers';
 import { networks } from '@api3/airnode-protocol';
 import { uniq } from 'lodash';
 import { getState, Provider, Providers, updateState } from './state';
+import { PROVIDER_TIMEOUT_MS } from './constants';
 
 export const initializeProvider = (chainId: string, providerUrl: string): Omit<Provider, 'providerName'> => {
-  // const rpcProvider = node.evm.buildEVMProvider(providerUrl, chainId);
   const network = networks[chainId] || null;
-  const rpcProvider = new ethers.providers.StaticJsonRpcProvider({ url : providerUrl, timeout: 60_000}, network);
+  const rpcProvider = new ethers.providers.StaticJsonRpcProvider(
+    { url: providerUrl, timeout: PROVIDER_TIMEOUT_MS },
+    network
+  );
 
   return { rpcProvider, chainId };
 };

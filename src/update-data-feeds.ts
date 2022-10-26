@@ -108,7 +108,7 @@ export const filterEmptyWallets = async () => {
     async ({ chainId, providers, sponsorAddress }): Promise<ChainSponsorBalance> => {
       const sponsorWallet = new ethers.Wallet(sponsorWalletsPrivateKey[sponsorAddress]);
       const balanceProviders = providers.map(async ({ rpcProvider }) => {
-        const goResult = await go(() => rpcProvider.getBalance(sponsorWallet.address),{retries: 2});
+        const goResult = await go(() => rpcProvider.getBalance(sponsorWallet.address), { retries: 2 });
 
         if (!goResult.success) {
           const message = `Failed to get balance for ${sponsorWallet.address}`;
@@ -144,13 +144,14 @@ export const filterEmptyWallets = async () => {
     .filter(({ isEmpty }) => isEmpty === false)
     .reduce((acc: DataFeedUpdates, { chainId, sponsorAddress }) => {
       return {
-         ...acc ,[chainId]: { ...acc[chainId], [sponsorAddress]: config.triggers.dataFeedUpdates[chainId][sponsorAddress] },
+        ...acc,
+        [chainId]: { ...acc[chainId], [sponsorAddress]: config.triggers.dataFeedUpdates[chainId][sponsorAddress] },
       };
     }, {});
 
   const newConfig: Config = { ...config, triggers: { ['dataFeedUpdates']: validDataFeedUpdates } };
   updateState((state) => ({ ...state, config: newConfig }));
-  
+
   const validDataFeeds = fulfilledResponses.filter(({ isEmpty }) => isEmpty === false);
   logger.info(
     `${fulfilledResponses.length}/${responseChainSponsorBalanceGroups.length} promises were resolved. Continuing w/ ${validDataFeeds.length} datafeeds`
